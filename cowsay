@@ -199,9 +199,12 @@ sub get_cow ($;@) {
     $body =~ s/^#.*\n//gm;
     my ( $thoughts_prefix ) = $body =~ m#^(\s+)\$thoughts\b#m;
     # prepare face regex
-    my $re_str = sprintf "\\\$(%s)\\b", join "|", keys %face;
-    my $re = qr($re_str);
-    return ( length $thoughts_prefix, $body =~ s#$re#$face{$1}||$&#gsmer );
+    my $re_str_1 = sprintf "\\\$(%s)\\b", join "|", keys %face;
+    my $re_str_2 = sprintf "\\\$\\{(%s)\\}", join "|", keys %face;
+    my $re1 = qr($re_str_1);
+    my $re2 = qr($re_str_2);
+    return ( length $thoughts_prefix,
+             $body =~ s#$re1#$face{$1}||$&#gsmer =~ s#$re2#$face{$1}||$&#gsmer );
 }
 
 sub display_usage {
