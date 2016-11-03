@@ -6,26 +6,36 @@
 ## This file is part of cowsay.  (c) 1999-2000 Tony Monroe.
 ##
 
-use Text::Tabs qw(expand);
-use Text::Wrap qw(wrap fill $columns);
+use strict;
+
+use Text::Tabs qw( expand );
+use Text::Wrap qw( wrap fill $columns );
 use File::Basename;
 use Getopt::Std;
 use Cwd;
+
+sub list_cowfiles (@);
+sub construct_balloon (@);
+sub construct_face (%);
+sub get_cow ($;@);
+sub convert_old_new ($);
 
 if (${^UTF8LOCALE}) {
     binmode STDIN, ':utf8';
     binmode STDOUT, ':utf8';
     require Encode;
-    eval { $_ = Encode::decode_utf8($_,1) } for @ARGV;
+    eval { $_ = Encode::decode_utf8($_, 1) } for @ARGV;
 }
 
-$version = "3.03";
-$progname = basename($0);
-$eyes = "oo";
-$tongue = "  ";
-$cowpath = $ENV{'COWPATH'} || '%PREFIX%/share/cows';
-@message = ();
-$thoughts = "";
+my $version = "3.04";
+my $progname = basename($0);
+
+## One of these days, we'll get it ported to Windows.  Yeah, right.
+my $pathsep = $^O eq "MSWin32" || $^O eq "Windows_NT" ? ";" : ":";
+
+my @cowpath = split $pathsep, $ENV{'COWPATH'} || '%PREFIX%/share/cows';
+
+my $thoughts = "";
 
 ## Yeah, this is rude, I know.  But hopefully it gets around a nasty
 ## little version dependency.
@@ -34,170 +44,184 @@ $Text::Wrap::initial_tab = 8;
 $Text::Wrap::subsequent_tab = 8;
 $Text::Wrap::tabstop = 8;
 
-## One of these days, we'll get it ported to Windows.  Yeah, right.
-
-if (($^O eq "MSWin32") or ($^O eq "Windows_NT")) {	## Many perls, eek!
-    $pathsep = ';';
-} else {
-    $pathsep = ':';
-}
-
-%opts = (
-    'e'		=>	'oo',
-    'f'		=>	'default.cow',
-    'n'		=>	0,
-    'T'		=>	'  ',
-    'W'		=>	40,
+my %opts = (
+    'e' => 'oo',
+    'f' => 'default.cow',
+    'n' => 0,
+    'T' => '  ',
+    'W' => 40,
 );
 
 getopts('bde:f:ghlLnNpstT:wW:y', \%opts);
 
 &display_usage if $opts{'h'};
-&list_cowfiles if $opts{'l'};
+if (exists $opts{'l'}) {
+    list_cowfiles(@cowpath);
+    exit;
+}
 
-$borg = $opts{'b'};
-$dead = $opts{'d'};
-$greedy = $opts{'g'};
-$paranoid = $opts{'p'};
-$stoned = $opts{'s'};
-$tired = $opts{'t'};
-$wired = $opts{'w'};
-$young = $opts{'y'};
-$eyes = substr($opts{'e'}, 0, 2);
-$tongue = substr($opts{'T'}, 0, 2);
-$the_cow = "";
-
-&slurp_input;
 $Text::Wrap::columns = $opts{'W'};
-@message = ($opts{'n'} ? expand(@message) : 
-	    split("\n", fill("", "", @message)));
-&construct_balloon;
-&construct_face;
-&get_cow;
-print @balloon_lines;
-print $the_cow;
 
-sub list_cowfiles {
-    my $basedir;
-    my @dirfiles;
-    chop($basedir = cwd);
-    for my $d (split(/$pathsep/, $cowpath)) {
-	print "Cow files in $d:\n";
-	opendir(COWDIR, $d) || die "$0: Cannot open $d\n";
-	for my $file (readdir COWDIR) {
-	    if ($file =~ s/\.cow$//) {
-		push(@dirfiles, $file);
-	    }
-	}
-	closedir(COWDIR);
-	print wrap("", "", sort @dirfiles), "\n";
-	@dirfiles = ();
-	chdir($basedir);
-    }
-    exit(0);
+my @message = @ARGV ? join " ", @ARGV : <STDIN>;
+chomp @message;
+
+@message = ( $opts{'n'} ? expand(@message) :
+                          split "\n", fill("", "", @message));
+our %face = construct_face( %opts );
+
+my @balloon = construct_balloon(@message);
+my ( $prefix, $image ) = get_cow($opts{'f'}, @cowpath);
+
+# Connect balloon and thoughts character
+my $len = maxlength(@balloon);
+my $imagelen = maxlength(split "\n", $image);
+
+if ($len < $prefix) {
+    $prefix = $prefix - $len + 2;
+    @balloon = map { sprintf "%s%s", " "x$prefix, $_ } @balloon;
 }
 
-sub slurp_input {
-    unless ($ARGV[0]) {
-	chomp(@message = <STDIN>);
-    } else {
-	&display_usage if $opts{'n'};
-	@message = join(' ', @ARGV);
+print @balloon;
+print $image;
+
+sub list_cowfiles (@) {
+    foreach my $dir (split $pathsep, $_[0]) {
+        opendir COWDIR, $dir or die "$0: Cannot open $dir\n";
+        my @files = grep /\.cow$/, readdir COWDIR;
+        closedir COWDIR;
+        print "Cow files in $dir:\n";
+        print wrap("", "", sort @files), "\n";
     }
 }
 
-sub maxlength {
-    my ($l, $m);
-    $m = -1;
-    for my $i (@_) {
-	$l = length $i;
-	$m = $l if ($l > $m);
+sub maxlength (@) {
+    my $ret = 0;
+    foreach my $line (@_) {
+        my $len = length $line;
+        $ret = $len if ($len > $ret);
     }
-##  maxlength patch from Jeronimo Pellegrini (Closes: #165218)
-    if ($m == -1) {
-	$m = 0;
-    }
-    return $m;
+    return $ret;
 }
 
-sub construct_balloon {
-    my $max = &maxlength(@message);
-    my $max2 = $max + 2;	## border space fudge.
+sub construct_balloon (@) {
+    my $max = maxlength(@_);
+    my $max2 = $max + 2;    ## border space fudge.
     my $format = "%s %-${max}s %s\n";
-    my @border;	## up-left, up-right, down-left, down-right, left, right
-    if ($0 =~ /think/i) {
-	$thoughts = 'o';
-	@border = qw[ ( ) ( ) ( ) ];
-    } elsif (@message < 2) {
-	$thoughts = '\\';
-	@border = qw[ < > ];
-    } else {
-	$thoughts = '\\';
-	if ($V and $V gt v5.6.0) {		# Thanks, perldelta.
-	    @border = qw[ / \\ \\ / | | ];
-	} else {
-	    @border = qw[ / \ \ / | | ];	
-	}
+
+    my @border;    ## up-left, up-right, down-left, down-right, left, right
+    if ($progname =~ m/think/i) {
+        $face{'thoughts'} = 'o';
+        @border = qw[ ( ) ( ) ( ) ];
     }
-## no trailing spaces (#276144)
-    push(@balloon_lines, 
-	" " . ("_" x $max2) . "\n" ,
-	sprintf($format, $border[0], $message[0], $border[1]),
-	(@message < 2 ? "" : 
-	    map { sprintf($format, $border[4], $_, $border[5]) } 
-		@message[1 .. $#message - 1]),
-	(@message < 2 ? "" : 
-	    sprintf($format, $border[2], $message[$#message], $border[3])),
-        " " . ("-" x $max2) . "\n"
-    );
+    elsif ($#_ == 0) {
+        $face{'thoughts'} = '\\';
+        @border = qw[ < > ];
+    }
+    else {
+        $face{'thoughts'} = '\\';
+        if ($^V and $^V gt v5.6.0) {        # Thanks, perldelta.
+            @border = qw[ / \\ \\ / | | ];
+        }
+        else {
+            @border = qw[ / \ \ / | | ];
+        }
+    }
+
+    my @ret = ( sprintf " %s\n", "_" x $max2 );
+    if (@_) {
+        push @ret, sprintf $format, $border[0], shift, $border[1];
+    }
+    my $tail = pop;
+    push @ret, map { sprintf($format, $border[4], $_, $border[5]) } @_;
+    if (defined $tail) {
+        push @ret, sprintf $format, $border[2], $tail, $border[3];
+    }
+    push @ret, sprintf " %s\n", "-" x $max2;
+
+    return wantarray ? @ret : join "", @ret;
 }
 
-sub construct_face {
-    if ($borg) { $eyes = "=="; }
-    if ($dead) { $eyes = "xx"; $tongue = "U "; }
-    if ($greedy) { $eyes = "\$\$"; }
-    if ($paranoid) { $eyes = "@@"; }
-    if ($stoned) { $eyes = "**"; $tongue = "U "; }
-    if ($tired) { $eyes = "--"; } 
-    if ($wired) { $eyes = "OO"; } 
-    if ($young) { $eyes = ".."; }
+sub construct_face (%) {
+    my ( %opt ) = @_;
+    my %face = ( 'eyes' => "oo", 'eye' => "o", 'tonque' => "", 'thoughts' => "" );
+
+    if (exists $opt{'e'}) {
+        $face{'eyes'} = substr $opts{'e'}, 0, 2;
+        $face{'eye'}  = substr $opts{'e'}, 0, 1;
+    }
+    if (exists $opt{'T'}) {
+        $face{'tongue'} = substr $opts{'T'}, 0, 2;
+    }
+    # borg
+    if (exists $opt{'b'}) { $face{'eyes'} = "=="; $face{'eye'} = "="; }
+    # dead
+    if (exists $opt{'d'}) { $face{'eyes'} = "xx"; $face{'eye'} = "x"; $face{'tongue'} = "U "; }
+    # greedy
+    if (exists $opt{'g'}) { $face{'eyes'} = '$$'; $face{'eye'} = '$'; }
+    # paranoid
+    if (exists $opt{'p'}) { $face{'eyes'} = '@@'; $face{'eye'} = '@'; }
+    # stoned
+    if (exists $opt{'s'}) { $face{'eyes'} = "**"; $face{'eye'} = "*"; $face{'tongue'} = "U "; }
+    # tired
+    if (exists $opt{'t'}) { $face{'eyes'} = '--'; $face{'eye'} = '-'; }
+    # wired
+    if (exists $opt{'w'}) { $face{'eyes'} = 'OO'; $face{'eye'} = 'O'; }
+    # young
+    if (exists $opt{'y'}) { $face{'eyes'} = '..'; $face{'eye'} = '.'; }
+    return wantarray ? %face : \%face;
 }
 
-sub get_cow {
-##
-## Get a cow from the specified cowfile; otherwise use the default cow
-## which was defined above in $the_cow.
-##
-    my $f = $opts{'f'};
-    my $full = "";
-    if ($opts{'f'} =~ m,/,) {
-	$full = $opts{'f'};
-    } else {
-	for my $d (split(/:/, $cowpath)) {
-	    if (-f "$d/$f") {
-		$full = "$d/$f";
-		last;
-	    } elsif (-f "$d/$f.cow") {
-		$full = "$d/$f.cow";
-		last;
-	    }
-	}
-	if ($full eq "") {
-	    die "$progname: Could not find $f cowfile!\n";
-	}
+sub get_cow ($;@) {
+    my ( $file, @cowpath ) = @_;
+    ##
+    ## Get a cow from the specified cowfile; otherwise use the default cow
+    ## which was defined above in $the_cow.
+    ##
+    my $fullpath = $file =~ m#/# ? $file : undef;
+    unless (defined $fullpath) {
+        foreach my $dir (@cowpath) {
+            if (-f "$dir/$file") {
+                $fullpath = "$dir/$file"; last;
+            }
+            elsif (-f "$dir/$file.cow") {
+                $fullpath = "$dir/$file.cow"; last;
+            }
+        }
+        unless (defined $fullpath) {
+            # die "$progname: Could not find $f cowfile!\n";
+            return;
+        }
     }
-    do $full;
-    die "$progname: $@\n" if $@;
+    open F, $fullpath or return;
+    my $body = convert_old_new(do { local $/; <F> }) or return;
+    close F;
+    # Remove comments
+    $body =~ s/^#.*\n//gm;
+    my ( $thoughts_prefix ) = $body =~ m#^(\s+)\$thoughts\b#m;
+    # prepare face regex
+    my $re_str = sprintf "\\\$(%s)\\b", join "|", keys %face;
+    my $re = qr($re_str);
+    return ( length $thoughts_prefix, $body =~ s#$re#$face{$1}||$&#gsmer );
 }
 
 sub display_usage {
-	die <<EOF;
+    die <<EOF;
 cow{say,think} version $version, (c) 1999 Tony Monroe
-Usage: $progname [-bdgpstwy] [-h] [-e eyes] [-f cowfile] 
+Usage: $progname [-bdgpstwy] [-h] [-e eyes] [-f cowfile]
           [-l] [-n] [-T tongue] [-W wrapcolumn] [message]
 EOF
 }
 
 sub main::HELP_MESSAGE {
-	display_usage;
+    display_usage;
 }
+
+sub convert_old_new ($) {
+    my ( $body ) = @_;
+    if ($body =~ s#^\s*\$the_cow\s*=\s*<<\s*(\w+)\s*;\n##m) {
+        $body =~ s#\\\\#\\#gs =~ s#^$1\s*?\n##mr;
+    }
+    return $body;
+}
+
+# vim: syn=perl ts=4 expandtab
