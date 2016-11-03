@@ -221,8 +221,9 @@ sub main::HELP_MESSAGE {
 
 sub convert_old_new ($) {
     my ( $body ) = @_;
-    if ($body =~ s#^\s*\$the_cow\s*=\s*<<\s*(\w+)\s*;\n##m) {
-        $body =~ s#\\\\#\\#gs =~ s#^$1\s*?\n##mr;
+    if ($body =~ s#^(.*?)\s*\$the_cow\s*=\s*<<\s*["']?(\w+)["']?\s*;?\s*\n##s) {
+        my ( $code, $tag ) = ( $1, $2 );
+        return $body =~ s#\\\\#\\#gsr =~ s#^$tag\s*?\n##mr;
     }
     return $body;
 }
